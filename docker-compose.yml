@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  core:
+    env_file:
+      - .env
+    networks:
+      - default
+    restart: always
+    build: 
+      context: ./core
+    ports:
+      - "80:80"
+    volumes:
+      - ./core:/app/
+      - ./.env:/app/.env:ro
+
+networks:
+  default:
