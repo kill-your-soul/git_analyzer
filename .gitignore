@@ -1,3 +1,5 @@
+**/test.py/** 
+**/gits/**
 ### PythonVanilla template
 # Byte-compiled / optimized / DLL files
 **/__pycache__/**
@@ -233,7 +235,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-
 # pytype static type analyzer
 .pytype/
 
