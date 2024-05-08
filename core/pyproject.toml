@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "git-analyzer"
+name = "git-ddownloader"
 version = "0.0.1"
 description = ""
 authors = ["kill_your_soul <platonovdi@gmail.com>"]

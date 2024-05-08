@@ -1,10 +1,11 @@
 import os
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
 
-def download_content(url: str, save_path: str) -> None:
+def download_content(url: str, save_path: Path) -> None:
     # Создаем директорию, если она еще не существует
     if not os.path.exists(save_path):
         os.makedirs(save_path)
@@ -30,7 +31,7 @@ def download_content(url: str, save_path: str) -> None:
             # Это файл, скачиваем его
             download_file(full_url, local_path)
 
-def download_file(url, save_path):
+def download_file(url: str, save_path: Path) -> None:
     # Получаем файл и сохраняем его
     response = requests.get(url)
     if response.status_code == 200:
