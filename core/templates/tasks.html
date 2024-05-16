@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task List</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+    <div class="container mt-5">
+        <h1>Task List</h1>
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Task ID</th>
+                    <th>Status</th>
+                    <th>Result</th>
+                    <th>User</th>
+                    <th>URL</th>
+                    <th>Path</th>
+                    <th>Created At</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td>{{ task.task_id }}</td>
+                    <td>{{ task.status }}</td>
+                    <td>{{ task.result or "N/A" }}</td>
+                    <td>{{ task.user }}</td>
+                    <td>{{ task.url }}</td>
+                    <td> {{ task.path }} </td>
+                    <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>

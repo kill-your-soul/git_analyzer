@@ -48,13 +48,13 @@
                 const statusResponse = await fetch(`/api/v1/git/status/${taskId}`);
                 const statusData = await statusResponse.json();
 
-                if (statusData.status === 'pending') {
+                if (statusData.status === 'PENDING') {
                     statusDiv.innerHTML = 'Task is pending...';
                     setTimeout(checkStatus, 500); // Проверка каждые полсекунды
-                } else if (statusData.status === 'success') {
+                } else if (statusData.status === 'SUCCESS') {
                     statusDiv.innerHTML = `Task completed successfully. Saved to: ${statusData.path}`;
-                } else if (statusData.status === 'failure') {
-                    statusDiv.innerHTML = `Task failed: ${statusData.error}`;
+                } else if (statusData.status === 'FAILURE') {
+                    statusDiv.innerHTML = `Task failed: ${statusData.result}`;
                 }
             };
 
