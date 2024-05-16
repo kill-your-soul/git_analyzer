@@ -1,4 +1,3 @@
-from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,10 +11,13 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     VERSION: str
     TOKENS: list[str] = []
-    # = Field(default_factory=lambda v: [x.strip() for x in v.split(",")])
-    # @model_validator("TOKENS", mode="before")
-    # def parse_tokens(value):
-    #     return [token.strip() for token in value.split(",")]
+    CELERY_BROKER: str
+    CELERY_BACKEND: str
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_SERVER: str
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = ""
 
 
 settings = Settings()

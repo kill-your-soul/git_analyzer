@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Git Downloader</title>
+</head>
+
+<body>
+    <h1>Git Downloader</h1>
+    <form id="downloadForm">
+        <label for="url">URL:</label>
+        <input type="text" id="url" name="url" required>
+        <label for="token">Token:</label>
+        <input type="text" id="token" name="token" required>
+        <!-- <label for="added_by">Added By:</label>
+        <input type="text" id="added_by" name="added_by" required> -->
+        <button type="submit">Download</button>
+    </form>
+    <h2>Status</h2>
+    <div id="status"></div>
+    <script>
+        document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('url').value;
+            const token = document.getElementById('token').value;
+            // const added_by = document.getElementById('added_by').value;
+
+            const response = await fetch('/api/v1/git/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': token,
+                },
+                body: JSON.stringify({
+                    url,
+                    // token, 
+                    // added_by 
+                }),
+            });
+
+            const data = await response.json();
+            const taskId = data.task_id;
+
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = 'Task added. Checking status...';
+
+            const checkStatus = async () => {
+                const statusResponse = await fetch(`/api/v1/git/status/${taskId}`);
+                const statusData = await statusResponse.json();
+
+                if (statusData.status === 'pending') {
+                    statusDiv.innerHTML = 'Task is pending...';
+                    setTimeout(checkStatus, 500); // Проверка каждые полсекунды
+                } else if (statusData.status === 'success') {
+                    statusDiv.innerHTML = `Task completed successfully. Saved to: ${statusData.path}`;
+                } else if (statusData.status === 'failure') {
+                    statusDiv.innerHTML = `Task failed: ${statusData.error}`;
+                }
+            };
+
+            setTimeout(checkStatus, 500); // Запуск первой проверки через полсекунды
+        });
+    </script>
+</body>
+
+</html>

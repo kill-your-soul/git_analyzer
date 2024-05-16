@@ -1,6 +1,24 @@
 version: '3.8'
 
 services:
+
+  db:
+    image: postgres
+    restart: always
+    networks:
+      - default
+    volumes:
+      - db_data:/var/lib/postgresql/data/pgdata
+    env_file:
+      - .env
+    environment:
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
+      - POSTGRES_USER=${POSTGRES_USER?Variable not set}
+      - POSTGRES_DB=${POSTGRES_DB?Variable not set}
+    ports:
+      - "5432:5432"
+
   core:
     env_file:
       - .env
@@ -14,6 +32,29 @@ services:
     volumes:
       - ./core:/app/
       - ./.env:/app/.env:ro
+      
+  redis:
+    image: redis:7
+    restart: always
+    networks:
+      - default
+
+  worker:
+    networks:
+      - default
+    build: 
+      context: ./core
+    command: celery -A utils.celery_worker.celery_app worker --loglevel=debug
+    depends_on:
+      - redis
+    volumes:
+      - ./core:/app/
+      - ./.env:/app/.env:ro
+    # environment:
+    #   - C_FORCE_ROOT=true
 
 networks:
   default:
+
+volumes:
+  db_data:
