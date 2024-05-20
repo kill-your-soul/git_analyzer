@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-import multiprocessing
 import os
-import os.path
 import re
-import socket
 import subprocess
 import sys
 import traceback
 import urllib.parse
 from contextlib import closing
 from http import HTTPStatus
+from pathlib import Path
 
 import bs4
 import dulwich.index
 import dulwich.objects
 import dulwich.pack
 import requests
+import requests.adapters
 import socks
 from requests_pkcs12 import Pkcs12Adapter
 
@@ -31,41 +30,28 @@ def printf(fmt, *args, file=sys.stdout) -> None:  # noqa: ANN001, ANN002
 
 
 def is_html(response) -> bool:
-    """ Return True if the response is a HTML webpage """
-    return (
-        "Content-Type" in response.headers
-        and "text/html" in response.headers["Content-Type"]
-    )
+    """Return True if the response is a HTML webpage"""
+    return "Content-Type" in response.headers and "text/html" in response.headers["Content-Type"]
 
 
 def is_safe_path(path):
-    """ Prevent directory traversal attacks """
+    """Prevent directory traversal attacks"""
     if path.startswith("/"):
         return False
 
     safe_path = os.path.expanduser("~")
-    return (
-        os.path.commonpath(
-            (os.path.realpath(os.path.join(safe_path, path)), safe_path)
-        )
-        == safe_path
-    )
+    return os.path.commonpath((os.path.realpath(os.path.join(safe_path, path)), safe_path)) == safe_path
 
 
 def get_indexed_files(response):
-    """ Return all the files in the directory index webpage """
+    """Return all the files in the directory index webpage"""
     html = bs4.BeautifulSoup(response.text, "html.parser")
     files = []
 
     for link in html.find_all("a"):
         url = urllib.parse.urlparse(link.get("href"))
 
-        if (
-            url.path
-            and is_safe_path(url.path)
-            and not url.scheme
-            and not url.netloc
-        ):
+        if url.path and is_safe_path(url.path) and not url.scheme and not url.netloc:
             files.append(url.path)
 
     return files
@@ -75,25 +61,18 @@ def verify_response(response):
     if response.status_code != 200:
         return (
             False,
-            f"[-] %s/%s responded with status code {response.status_code}\n",
+            f"[-] {response.url} responded with status code {response.status_code}\n",
         )
-    elif (
-        "Content-Length" in response.headers
-        and response.headers["Content-Length"] == 0
-    ):
-        return False, "[-] %s/%s responded with a zero-length body\n"
-    elif (
-        "Content-Type" in response.headers
-        and "text/html" in response.headers["Content-Type"]
-    ):
-        return False, "[-] %s/%s responded with HTML\n"
+    elif "Content-Length" in response.headers and response.headers["Content-Length"] == 0:
+        return False, f"[-] {response.url} responded with a zero-length body\n"
+    elif "Content-Type" in response.headers and "text/html" in response.headers["Content-Type"]:
+        return False, f"[-] {response.url} responded with HTML\n"
     else:
-        return True, True
+        return True, ""
 
 
 def create_intermediate_dirs(path):
-    """ Create intermediate directories, if necessary """
-
+    """Create intermediate directories, if necessary"""
     dirname, basename = os.path.split(path)
 
     if dirname and not os.path.exists(dirname):
@@ -104,7 +83,7 @@ def create_intermediate_dirs(path):
 
 
 def get_referenced_sha1(obj_file):
-    """ Return all the referenced SHA1 in the given object file """
+    """Return all the referenced SHA1 in the given object file"""
     objs = []
 
     if isinstance(obj_file, dulwich.objects.Commit):
@@ -120,139 +99,83 @@ def get_referenced_sha1(obj_file):
     elif isinstance(obj_file, dulwich.objects.Tag):
         pass
     else:
-        printf(
-            "error: unexpected object type: %r\n" % obj_file, file=sys.stderr
-        )
+        printf("error: unexpected object type: %r\n" % obj_file, file=sys.stderr)
         sys.exit(1)
 
     return objs
 
 
-class Worker(multiprocessing.Process):
-    """ Worker for process_tasks """
+def download_file(session, filepath, url, directory, timeout):
+    if os.path.isfile(os.path.join(directory, filepath)):
+        printf("[-] Already downloaded %s/%s\n", url, filepath)
+        return []
 
-    def __init__(self, pending_tasks, tasks_done, args):
-        super().__init__()
-        self.daemon = True
-        self.pending_tasks = pending_tasks
-        self.tasks_done = tasks_done
-        self.args = args
+    with closing(
+        session.get(
+            f"{url}/{filepath}",
+            allow_redirects=False,
+            stream=True,
+            timeout=timeout,
+        )
+    ) as response:
+        printf(
+            "[-] Fetching %s/%s [%d]\n",
+            url,
+            filepath,
+            response.status_code,
+        )
 
-    def run(self):
-        # initialize process
-        self.init(*self.args)
-
-        # fetch and do tasks
-        while True:
-            task = self.pending_tasks.get(block=True)
-
-            if task is None:  # end signal
-                return
-
-            try:
-                result = self.do_task(task, *self.args)
-            except Exception:
-                printf("Task %s raised exception:\n", task, file=sys.stderr)
-                traceback.print_exc()
-                result = []
-
-            assert isinstance(
-                result, list
-            ), "do_task() should return a list of tasks"
-
-            self.tasks_done.put(result)
-
-    def init(self, *args):
-        raise NotImplementedError
-
-    def do_task(self, task, *args):
-        raise NotImplementedError
-
-
-def process_tasks(initial_tasks, worker, jobs, args=(), tasks_done=None):
-    """ Process tasks in parallel """
-
-    if not initial_tasks:
-        return
-
-    tasks_seen = set(tasks_done) if tasks_done else set()
-    pending_tasks = multiprocessing.Queue()
-    tasks_done = multiprocessing.Queue()
-    num_pending_tasks = 0
-
-    # add all initial tasks in the queue
-    for task in initial_tasks:
-        assert task is not None
-
-        if task not in tasks_seen:
-            pending_tasks.put(task)
-            num_pending_tasks += 1
-            tasks_seen.add(task)
-
-    # initialize processes
-    processes = [worker(pending_tasks, tasks_done, args) for _ in range(jobs)]
-
-    # launch them all
-    for p in processes:
-        p.start()
-
-    # collect task results
-    while num_pending_tasks > 0:
-        task_result = tasks_done.get(block=True)
-        num_pending_tasks -= 1
-
-        for task in task_result:
-            assert task is not None
-
-            if task not in tasks_seen:
-                pending_tasks.put(task)
-                num_pending_tasks += 1
-                tasks_seen.add(task)
-
-    # send termination signal (task=None)
-    for _ in range(jobs):
-        pending_tasks.put(None)
-
-    # join all
-    for p in processes:
-        p.join()
-
-
-class DownloadWorker(Worker):
-    """ Download a list of files """
-
-    def init(self, url, directory, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
-        self.session = requests.Session()
-        self.session.verify = False
-        self.session.headers = http_headers
-        if client_cert_p12:
-            self.session.mount(url, Pkcs12Adapter(pkcs12_filename=client_cert_p12, pkcs12_password=client_cert_p12_password))
-        else:
-            self.session.mount(url, requests.adapters.HTTPAdapter(max_retries=retry))
-
-    def do_task(self, filepath, url, directory, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
-        if os.path.isfile(os.path.join(directory, filepath)):
-            printf("[-] Already downloaded %s/%s\n", url, filepath)
+        valid, error_message = verify_response(response)
+        if not valid:
+            printf(error_message, file=sys.stderr)
             return []
 
-        with closing(
-            self.session.get(
-                "%s/%s" % (url, filepath),
-                allow_redirects=False,
-                stream=True,
-                timeout=timeout,
-            )
-        ) as response:
-            printf(
-                "[-] Fetching %s/%s [%d]\n",
-                url,
-                filepath,
-                response.status_code,
-            )
+        abspath = os.path.abspath(os.path.join(directory, filepath))
+        create_intermediate_dirs(abspath)
 
+        # write file
+        with open(abspath, "wb") as f:
+            for chunk in response.iter_content(4096):
+                f.write(chunk)
+
+    return []
+
+
+def download_directory(session, filepath, url, directory, timeout):
+    if os.path.isfile(os.path.join(directory, filepath)):
+        printf("[-] Already downloaded %s/%s\n", url, filepath)
+        return []
+
+    with closing(
+        session.get(
+            f"{url}/{filepath}",
+            allow_redirects=False,
+            stream=True,
+            timeout=timeout,
+        )
+    ) as response:
+        printf(
+            "[-] Fetching %s/%s [%d]\n",
+            url,
+            filepath,
+            response.status_code,
+        )
+
+        if (
+            response.status_code in (301, 302)
+            and "Location" in response.headers
+            and response.headers["Location"].endswith(filepath + "/")
+        ):
+            return [filepath + "/"]
+
+        if filepath.endswith("/"):  # directory index
+            assert is_html(response)
+
+            return [filepath + filename for filename in get_indexed_files(response)]
+        else:  # file
             valid, error_message = verify_response(response)
             if not valid:
-                printf(error_message, url, filepath, file=sys.stderr)
+                printf(error_message, file=sys.stderr)
                 return []
 
             abspath = os.path.abspath(os.path.join(directory, filepath))
@@ -263,161 +186,107 @@ class DownloadWorker(Worker):
                 for chunk in response.iter_content(4096):
                     f.write(chunk)
 
-            return []
+    return []
 
 
-class RecursiveDownloadWorker(DownloadWorker):
-    """ Download a directory recursively """
+def find_refs(session, filepath, url, directory, timeout):
+    response = session.get(f"{url}/{filepath}", allow_redirects=False, timeout=timeout)
+    printf("[-] Fetching %s/%s [%d]\n", url, filepath, response.status_code)
 
-    def do_task(self, filepath, url, directory, retry, timeout, http_headers):
-        if os.path.isfile(os.path.join(directory, filepath)):
-            printf("[-] Already downloaded %s/%s\n", url, filepath)
-            return []
+    valid, error_message = verify_response(response)
+    if not valid:
+        printf(error_message, file=sys.stderr)
+        return []
 
-        with closing(
-            self.session.get(
-                f"{url}/{filepath}",
-                allow_redirects=False,
-                stream=True,
-                timeout=timeout,
-            )
-        ) as response:
-            printf(
-                "[-] Fetching %s/%s [%d]\n",
-                url,
-                filepath,
-                response.status_code,
-            )
+    abspath = os.path.abspath(os.path.join(directory, filepath))
+    create_intermediate_dirs(abspath)
 
-            if (
-                response.status_code in (301, 302)
-                and "Location" in response.headers
-                and response.headers["Location"].endswith(filepath + "/")
-            ):
-                return [filepath + "/"]
+    # write file
+    with open(abspath, "w") as f:
+        f.write(response.text)
 
-            if filepath.endswith("/"):  # directory index
-                assert is_html(response)
+    # find refs
+    tasks = []
 
-                return [
-                    filepath + filename
-                    for filename in get_indexed_files(response)
-                ]
-            else:  # file
-                valid, error_message = verify_response(response)
-                if not valid:
-                    printf(error_message, url, filepath, file=sys.stderr)
-                    return []
+    for ref in re.findall(r"(refs(/[a-zA-Z0-9\-\.\_\*]+)+)", response.text):
+        ref = ref[0]
+        if not ref.endswith("*") and is_safe_path(ref):
+            tasks.append(f".git/{ref}")
+            tasks.append(f".git/logs/{ref}")
 
-                abspath = os.path.abspath(os.path.join(directory, filepath))
-                create_intermediate_dirs(abspath)
-
-                # write file
-                with open(abspath, "wb") as f:
-                    for chunk in response.iter_content(4096):
-                        f.write(chunk)
-
-                return []
+    return tasks
 
 
-class FindRefsWorker(DownloadWorker):
-    """ Find refs/ """
+def find_objects(session, obj, url, directory, timeout):
+    filepath = f".git/objects/{obj[:2]}/{obj[2:]}"
 
-    def do_task(self, filepath, url, directory, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
-        response = self.session.get(
-            "%s/%s" % (url, filepath), allow_redirects=False, timeout=timeout
+    if os.path.isfile(os.path.join(directory, filepath)):
+        printf("[-] Already downloaded %s/%s\n", url, filepath)
+    else:
+        response = session.get(
+            f"{url}/{filepath}",
+            allow_redirects=False,
+            timeout=timeout,
         )
         printf(
-            "[-] Fetching %s/%s [%d]\n", url, filepath, response.status_code
+            "[-] Fetching %s/%s [%d]\n",
+            url,
+            filepath,
+            response.status_code,
         )
 
         valid, error_message = verify_response(response)
         if not valid:
-            printf(error_message, url, filepath, file=sys.stderr)
+            printf(error_message, file=sys.stderr)
             return []
 
         abspath = os.path.abspath(os.path.join(directory, filepath))
         create_intermediate_dirs(abspath)
 
         # write file
-        with open(abspath, "w") as f:
-            f.write(response.text)
+        with open(abspath, "wb") as f:
+            f.write(response.content)
 
-        # find refs
-        tasks = []
-
-        for ref in re.findall(
-            r"(refs(/[a-zA-Z0-9\-\.\_\*]+)+)", response.text
-        ):
-            ref = ref[0]
-            if not ref.endswith("*") and is_safe_path(ref):
-                tasks.append(".git/%s" % ref)
-                tasks.append(".git/logs/%s" % ref)
-
-        return tasks
+    abspath = os.path.abspath(os.path.join(directory, filepath))
+    # parse object file to find other objects
+    obj_file = dulwich.objects.ShaFile.from_path(abspath)
+    return get_referenced_sha1(obj_file)
 
 
-class FindObjectsWorker(DownloadWorker):
-    """ Find objects """
+def process_tasks(initial_tasks, process_task_func, session, url, directory, timeout):
+    tasks_seen = set()
+    pending_tasks = initial_tasks
 
-    def do_task(self, obj, url, directory, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
-        filepath = ".git/objects/%s/%s" % (obj[:2], obj[2:])
-
-        if os.path.isfile(os.path.join(directory, filepath)):
-            printf("[-] Already downloaded %s/%s\n", url, filepath)
-        else:
-            response = self.session.get(
-                "%s/%s" % (url, filepath),
-                allow_redirects=False,
-                timeout=timeout,
-            )
-            printf(
-                "[-] Fetching %s/%s [%d]\n",
-                url,
-                filepath,
-                response.status_code,
-            )
-
-            valid, error_message = verify_response(response)
-            if not valid:
-                printf(error_message, url, filepath, file=sys.stderr)
-                return []
-
-            abspath = os.path.abspath(os.path.join(directory, filepath))
-            create_intermediate_dirs(abspath)
-
-            # write file
-            with open(abspath, "wb") as f:
-                f.write(response.content)
-
-        abspath = os.path.abspath(os.path.join(directory, filepath))
-        # parse object file to find other objects
-        obj_file = dulwich.objects.ShaFile.from_path(abspath)
-        return get_referenced_sha1(obj_file)
+    while pending_tasks:
+        task = pending_tasks.pop(0)
+        if task not in tasks_seen:
+            tasks_seen.add(task)
+            new_tasks = process_task_func(session, task, url, directory, timeout)
+            pending_tasks.extend(new_tasks)
 
 
 def sanitize_file(filepath):
-    """ Inplace comment out possibly unsafe lines based on regex """
-    assert os.path.isfile(filepath), "%s is not a file" % filepath
+    """Inplace comment out possibly unsafe lines based on regex"""
+    assert os.path.isfile(filepath), f"{filepath} is not a file"
 
-    UNSAFE=r"^\s*fsmonitor|sshcommand|askpass|editor|pager"
+    UNSAFE = r"^\s*fsmonitor|sshcommand|askpass|editor|pager"
 
-    with open(filepath, 'r+') as f:
+    with open(filepath, "r+") as f:
         content = f.read()
-        modified_content = re.sub(UNSAFE, '# \g<0>', content, flags=re.IGNORECASE)
+        modified_content = re.sub(UNSAFE, "# \g<0>", content, flags=re.IGNORECASE)
         if content != modified_content:
-            printf("Warning: '%s' file was altered\n" % filepath)
+            printf(f"Warning: '{filepath}' file was altered\n")
             f.seek(0)
             f.write(modified_content)
 
-@celery_app.task(bind=True, name="utils.git_dump.fetch_git")
-def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
-    """ Dump a git repository into the output directory """
 
-    assert os.path.isdir(directory), "%s is not a directory" % directory
-    assert jobs >= 1, "invalid number of jobs"
-    assert retry >= 1, "invalid number of retries"
-    assert timeout >= 1, "invalid timeout"
+@celery_app.task(bind=True, name="utils.git_dump.fetch_git")
+def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
+    """Dump a git repository into the output directory"""
+
+    save_path = Path(directory.replace(":", "_"))
+    url = str(url)
+    os.makedirs(save_path, exist_ok=True)
 
     session = requests.Session()
     session.verify = False
@@ -426,11 +295,10 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
         session.mount(url, Pkcs12Adapter(pkcs12_filename=client_cert_p12, pkcs12_password=client_cert_p12_password))
     else:
         session.mount(url, requests.adapters.HTTPAdapter(max_retries=retry))
-    if os.listdir(directory):
+
+    if os.listdir(save_path):
         printf("Warning: Destination '%s' is not empty\n", directory)
 
-    # find base url
-    url = url.rstrip("/")
     if url.endswith("HEAD"):
         url = url[:-4]
     url = url.rstrip("/")
@@ -438,7 +306,6 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
         url = url[:-4]
     url = url.rstrip("/")
 
-    # check for /.git/HEAD
     printf("[-] Testing %s/.git/HEAD ", url)
     response = session.get(
         f"{url}/.git/HEAD",
@@ -449,7 +316,7 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
 
     valid, error_message = verify_response(response)
     if not valid:
-        printf(error_message, url, "/.git/HEAD", file=sys.stderr)
+        printf(error_message, file=sys.stderr)
         return 1
     elif not re.match(r"^(ref:.*|[0-9a-f]{40}$)", response.text.strip()):
         printf(
@@ -464,27 +331,26 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
     configured_proxy = socks.getdefaultproxy()
     if configured_proxy is not None:
         proxy_types = ["http", "socks4h", "socks5h"]
-        environment["ALL_PROXY"] = f"http.proxy={proxy_types[configured_proxy[0]]}://{configured_proxy[1]}:{configured_proxy[2]}"
+        environment["ALL_PROXY"] = (
+            f"http.proxy={proxy_types[configured_proxy[0]]}://{configured_proxy[1]}:{configured_proxy[2]}"
+        )
 
     # check for directory listing
     printf("[-] Testing %s/.git/ ", url)
-    response = session.get("%s/.git/" % url, allow_redirects=False)
+    response = session.get(f"{url}/.git/", allow_redirects=False)
     printf("[%d]\n", response.status_code)
 
-
-    if (
-        response.status_code == 200
-        and is_html(response)
-        and "HEAD" in get_indexed_files(response)
-    ):
+    if response.status_code == 200 and is_html(response) and "HEAD" in get_indexed_files(response):
         printf("[-] Fetching .git recursively\n")
         process_tasks(
             [".git/", ".gitignore"],
-            RecursiveDownloadWorker,
-            jobs,
-            args=(url, directory, retry, timeout, http_headers),
+            download_directory,
+            session,
+            url,
+            directory,
+            timeout,
         )
-        
+
         os.chdir(directory)
 
         printf("[-] Sanitizing .git/config\n")
@@ -518,9 +384,11 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
     ]
     process_tasks(
         tasks,
-        DownloadWorker,
-        jobs,
-        args=(url, directory, retry, timeout, http_headers, client_cert_p12, client_cert_p12_password),
+        download_file,
+        session,
+        url,
+        directory,
+        timeout,
     )
 
     # find refs
@@ -566,14 +434,15 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
         ".git/refs/wip/index/refs/heads/master",
         ".git/refs/wip/index/refs/heads/staging",
         ".git/refs/wip/index/refs/heads/production",
-        ".git/refs/wip/index/refs/heads/development"
+        ".git/refs/wip/index/refs/heads/development",
     ]
-
     process_tasks(
         tasks,
-        FindRefsWorker,
-        jobs,
-        args=(url, directory, retry, timeout, http_headers, client_cert_p12, client_cert_p12_password),
+        find_refs,
+        session,
+        url,
+        directory,
+        timeout,
     )
 
     # find packs
@@ -581,22 +450,22 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
     tasks = []
 
     # use .git/objects/info/packs to find packs
-    info_packs_path = os.path.join(
-        directory, ".git", "objects", "info", "packs"
-    )
+    info_packs_path = os.path.join(directory, ".git", "objects", "info", "packs")
     if os.path.exists(info_packs_path):
         with open(info_packs_path, "r") as f:
             info_packs = f.read()
 
         for sha1 in re.findall(r"pack-([a-f0-9]{40})\.pack", info_packs):
-            tasks.append(".git/objects/pack/pack-%s.idx" % sha1)
-            tasks.append(".git/objects/pack/pack-%s.pack" % sha1)
+            tasks.append(f".git/objects/pack/pack-{sha1}.idx")
+            tasks.append(f".git/objects/pack/pack-{sha1}.pack")
 
     process_tasks(
         tasks,
-        DownloadWorker,
-        jobs,
-        args=(url, directory, retry, timeout, http_headers, client_cert_p12, client_cert_p12_password),
+        download_file,
+        session,
+        url,
+        directory,
+        timeout,
     )
 
     # find objects
@@ -611,14 +480,10 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
         os.path.join(directory, ".git", "FETCH_HEAD"),
         os.path.join(directory, ".git", "ORIG_HEAD"),
     ]
-    for dirpath, _, filenames in os.walk(
-        os.path.join(directory, ".git", "refs")
-    ):
+    for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "refs")):
         for filename in filenames:
             files.append(os.path.join(dirpath, filename))
-    for dirpath, _, filenames in os.walk(
-        os.path.join(directory, ".git", "logs")
-    ):
+    for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "logs")):
         for filename in filenames:
             files.append(os.path.join(dirpath, filename))
 
@@ -647,9 +512,7 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
         for filename in os.listdir(pack_file_dir):
             if filename.startswith("pack-") and filename.endswith(".pack"):
                 pack_data_path = os.path.join(pack_file_dir, filename)
-                pack_idx_path = os.path.join(
-                    pack_file_dir, filename[:-5] + ".idx"
-                )
+                pack_idx_path = os.path.join(pack_file_dir, filename[:-5] + ".idx")
                 pack_data = dulwich.pack.PackData(pack_data_path)
                 pack_idx = dulwich.pack.load_pack_index(pack_idx_path)
                 pack = dulwich.pack.Pack.from_objects(pack_data, pack_idx)
@@ -661,11 +524,12 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
     # fetch all objects
     printf("[-] Fetching objects\n")
     process_tasks(
-        objs,
-        FindObjectsWorker,
-        jobs,
-        args=(url, directory, retry, timeout, http_headers, client_cert_p12, client_cert_p12_password),
-        tasks_done=packed_objs,
+        list(objs),
+        find_objects,
+        session,
+        url,
+        directory,
+        timeout,
     )
 
     # git checkout
@@ -674,10 +538,6 @@ def fetch_git(url, directory, jobs, retry, timeout, http_headers, client_cert_p1
     sanitize_file(".git/config")
 
     # ignore errors
-    subprocess.call(
-        ["git", "checkout", "."], 
-        stderr=open(os.devnull, "wb"),
-        env=environment
-    )
+    subprocess.call(["git", "checkout", "."], stderr=open(os.devnull, "wb"), env=environment)
 
     return 0

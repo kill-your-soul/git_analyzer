@@ -24,7 +24,17 @@ templates = Jinja2Templates(directory="templates")
 async def get_dot_git(session: SessionDep, git_in: GitIn, request: Request) -> None:
     path_to_save = Path(__file__).parent.parent.parent / "gits" / git_in.url.split("://")[1]
     # task = download_content.apply_async(args=[git_in.url, str(path_to_save)])
-    task = fetch_git.apply_async(args=[git_in.url, str(path_to_save), int(10), 3, 3, None, ])
+    task = fetch_git.apply_async(
+        args=[
+            git_in.url,
+            str(path_to_save),
+            int(10),
+            int(3),
+            int(3),
+            None,
+            None,
+        ]
+    )
 
     new_task = Task(
         task_id=task.id,
@@ -63,6 +73,7 @@ async def get_status(session: SessionDep, task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     # task = Task.model_validate()
     task_in_db.status = task_result.state
+    print(task_result.traceback)
     task_in_db.result = task_result.result["status"] if task_result.ready() else ""
     if task_result.info and task_result.info["status"] == "success":
         task_in_db.path = task_result.info["path"]
