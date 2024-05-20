@@ -10,7 +10,7 @@ celery_app = Celery(
     backend=settings.CELERY_BACKEND,
 )
 
-celery_app.autodiscover_tasks(["utils.download"])
+celery_app.autodiscover_tasks(["utils.download", "utils.git_dump"])
 # celery_app.conf.update(
 #     event_serializer='pickle',
 #     result_serializer='json',

@@ -14,6 +14,7 @@ from models.task import Task
 from schemas.git import GitIn
 from utils.celery_worker import celery_app
 from utils.download import download_content
+from utils.git_dump import fetch_git
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -22,7 +23,8 @@ templates = Jinja2Templates(directory="templates")
 @router.post("/")
 async def get_dot_git(session: SessionDep, git_in: GitIn, request: Request) -> None:
     path_to_save = Path(__file__).parent.parent.parent / "gits" / git_in.url.split("://")[1]
-    task = download_content.apply_async(args=[git_in.url, str(path_to_save)])
+    # task = download_content.apply_async(args=[git_in.url, str(path_to_save)])
+    task = fetch_git.apply_async(args=[git_in.url, str(path_to_save), int(10), 3, 3, None, ])
 
     new_task = Task(
         task_id=task.id,
