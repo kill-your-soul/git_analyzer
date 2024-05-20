@@ -324,7 +324,7 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
             url,
             file=sys.stderr,
         )
-        return 1
+        return {"status": "error", "path": "", "url": str(url)}
 
     # set up environment to ensure proxy usage
     environment = os.environ.copy()
@@ -358,7 +358,7 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
 
         printf("[-] Running git checkout .\n")
         subprocess.check_call(["git", "checkout", "."], env=environment)
-        return 0
+        return {"status": "success", "path": directory, "url": str(url)}
 
     # no directory listing
     printf("[-] Fetching common files\n")
@@ -540,4 +540,4 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
     # ignore errors
     subprocess.call(["git", "checkout", "."], stderr=open(os.devnull, "wb"), env=environment)
 
-    return 0
+    return {"status": "success", "path": directory, "url": str(url)}
