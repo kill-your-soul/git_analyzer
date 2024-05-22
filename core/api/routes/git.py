@@ -15,6 +15,7 @@ from schemas.git import GitIn
 from utils.celery_worker import celery_app
 from utils.download import download_content
 from utils.git_dump import fetch_git
+from utils.tasks import update_all_tasks_status, update_task_status
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -65,24 +66,7 @@ async def get_dot_git(session: SessionDep, git_in: GitIn, request: Request) -> N
 
 @router.get("/status/{task_id}")
 async def get_status(session: SessionDep, task_id: str):
-    task_result = AsyncResult(task_id, backend=celery_app.backend, app=celery_app)
-    statement = select(Task).where(Task.task_id == task_id)
-    result = await session.execute(statement)
-    task_in_db: Task | None = result.scalar_one_or_none()
-    if not task_in_db:
-        raise HTTPException(status_code=404, detail="Task not found")
-    # task = Task.model_validate()
-    task_in_db.status = task_result.state
-    print(task_result.traceback)
-    task_in_db.result = task_result.result["status"] if task_result.ready() else ""
-    if task_result.info and task_result.info["status"] == "success":
-        task_in_db.path = task_result.info["path"]
-    # print(task_result.result)
-    # print(task_result.info)
-    # print(task_result.state)
-    session.add(task_in_db)
-    await session.commit()
-    await session.refresh(task_in_db)
+    task_in_db = await update_task_status(session, task_id)
     return task_in_db
 
 
@@ -96,5 +80,8 @@ async def tasks(session: SessionDep, request: Request):
     statement = select(Task)
     result = await session.execute(statement)
     tasks = result.scalars().all()
-    # return tasks
+
+    # Update status for all tasks
+    await update_all_tasks_status(session, tasks)
+
     return templates.TemplateResponse("tasks.html", {"request": request, "tasks": tasks})

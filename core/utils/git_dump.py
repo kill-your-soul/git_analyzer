@@ -283,261 +283,263 @@ def sanitize_file(filepath):
 @celery_app.task(bind=True, name="utils.git_dump.fetch_git")
 def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, client_cert_p12=None, client_cert_p12_password=None):
     """Dump a git repository into the output directory"""
+    try:
+        save_path = Path(directory.replace(":", "_"))
+        url = str(url)
+        os.makedirs(save_path, exist_ok=True)
 
-    save_path = Path(directory.replace(":", "_"))
-    url = str(url)
-    os.makedirs(save_path, exist_ok=True)
+        session = requests.Session()
+        session.verify = False
+        session.headers = http_headers
+        if client_cert_p12:
+            session.mount(url, Pkcs12Adapter(pkcs12_filename=client_cert_p12, pkcs12_password=client_cert_p12_password))
+        else:
+            session.mount(url, requests.adapters.HTTPAdapter(max_retries=retry))
 
-    session = requests.Session()
-    session.verify = False
-    session.headers = http_headers
-    if client_cert_p12:
-        session.mount(url, Pkcs12Adapter(pkcs12_filename=client_cert_p12, pkcs12_password=client_cert_p12_password))
-    else:
-        session.mount(url, requests.adapters.HTTPAdapter(max_retries=retry))
+        if os.listdir(save_path):
+            printf("Warning: Destination '%s' is not empty\n", directory)
 
-    if os.listdir(save_path):
-        printf("Warning: Destination '%s' is not empty\n", directory)
+        if url.endswith("HEAD"):
+            url = url[:-4]
+        url = url.rstrip("/")
+        if url.endswith(".git"):
+            url = url[:-4]
+        url = url.rstrip("/")
 
-    if url.endswith("HEAD"):
-        url = url[:-4]
-    url = url.rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
-    url = url.rstrip("/")
-
-    printf("[-] Testing %s/.git/HEAD ", url)
-    response = session.get(
-        f"{url}/.git/HEAD",
-        timeout=timeout,
-        allow_redirects=False,
-    )
-    printf("[%d]\n", response.status_code)
-
-    valid, error_message = verify_response(response)
-    if not valid:
-        printf(error_message, file=sys.stderr)
-        return 1
-    elif not re.match(r"^(ref:.*|[0-9a-f]{40}$)", response.text.strip()):
-        printf(
-            "error: %s/.git/HEAD is not a git HEAD file\n",
-            url,
-            file=sys.stderr,
+        printf("[-] Testing %s/.git/HEAD ", url)
+        response = session.get(
+            f"{url}/.git/HEAD",
+            timeout=timeout,
+            allow_redirects=False,
         )
-        return {"status": "error", "path": "", "url": str(url)}
+        printf("[%d]\n", response.status_code)
 
-    # set up environment to ensure proxy usage
-    environment = os.environ.copy()
-    configured_proxy = socks.getdefaultproxy()
-    if configured_proxy is not None:
-        proxy_types = ["http", "socks4h", "socks5h"]
-        environment["ALL_PROXY"] = (
-            f"http.proxy={proxy_types[configured_proxy[0]]}://{configured_proxy[1]}:{configured_proxy[2]}"
-        )
+        valid, error_message = verify_response(response)
+        if not valid:
+            printf(error_message, file=sys.stderr)
+            return 1
+        elif not re.match(r"^(ref:.*|[0-9a-f]{40}$)", response.text.strip()):
+            printf(
+                "error: %s/.git/HEAD is not a git HEAD file\n",
+                url,
+                file=sys.stderr,
+            )
+            return {"status": "error", "path": "", "url": str(url)}
 
-    # check for directory listing
-    printf("[-] Testing %s/.git/ ", url)
-    response = session.get(f"{url}/.git/", allow_redirects=False)
-    printf("[%d]\n", response.status_code)
+        # set up environment to ensure proxy usage
+        environment = os.environ.copy()
+        configured_proxy = socks.getdefaultproxy()
+        if configured_proxy is not None:
+            proxy_types = ["http", "socks4h", "socks5h"]
+            environment["ALL_PROXY"] = (
+                f"http.proxy={proxy_types[configured_proxy[0]]}://{configured_proxy[1]}:{configured_proxy[2]}"
+            )
 
-    if response.status_code == 200 and is_html(response) and "HEAD" in get_indexed_files(response):
-        printf("[-] Fetching .git recursively\n")
+        # check for directory listing
+        printf("[-] Testing %s/.git/ ", url)
+        response = session.get(f"{url}/.git/", allow_redirects=False)
+        printf("[%d]\n", response.status_code)
+
+        if response.status_code == 200 and is_html(response) and "HEAD" in get_indexed_files(response):
+            printf("[-] Fetching .git recursively\n")
+            process_tasks(
+                [".git/", ".gitignore"],
+                download_directory,
+                session,
+                url,
+                directory,
+                timeout,
+            )
+
+            os.chdir(directory)
+
+            printf("[-] Sanitizing .git/config\n")
+            sanitize_file(".git/config")
+
+            printf("[-] Running git checkout .\n")
+            subprocess.check_call(["git", "checkout", "."], env=environment)
+            return {"status": "success", "path": directory, "url": str(url)}
+
+        # no directory listing
+        printf("[-] Fetching common files\n")
+        tasks = [
+            ".gitignore",
+            ".git/COMMIT_EDITMSG",
+            ".git/description",
+            ".git/hooks/applypatch-msg.sample",
+            ".git/hooks/commit-msg.sample",
+            ".git/hooks/post-commit.sample",
+            ".git/hooks/post-receive.sample",
+            ".git/hooks/post-update.sample",
+            ".git/hooks/pre-applypatch.sample",
+            ".git/hooks/pre-commit.sample",
+            ".git/hooks/pre-push.sample",
+            ".git/hooks/pre-rebase.sample",
+            ".git/hooks/pre-receive.sample",
+            ".git/hooks/prepare-commit-msg.sample",
+            ".git/hooks/update.sample",
+            ".git/index",
+            ".git/info/exclude",
+            ".git/objects/info/packs",
+        ]
         process_tasks(
-            [".git/", ".gitignore"],
-            download_directory,
+            tasks,
+            download_file,
             session,
             url,
             directory,
             timeout,
         )
 
-        os.chdir(directory)
+        # find refs
+        printf("[-] Finding refs/\n")
+        tasks = [
+            ".git/FETCH_HEAD",
+            ".git/HEAD",
+            ".git/ORIG_HEAD",
+            ".git/config",
+            ".git/info/refs",
+            ".git/logs/HEAD",
+            ".git/logs/refs/heads/main",
+            ".git/logs/refs/heads/master",
+            ".git/logs/refs/heads/staging",
+            ".git/logs/refs/heads/production",
+            ".git/logs/refs/heads/development",
+            ".git/logs/refs/remotes/origin/HEAD",
+            ".git/logs/refs/remotes/origin/main",
+            ".git/logs/refs/remotes/origin/master",
+            ".git/logs/refs/remotes/origin/staging",
+            ".git/logs/refs/remotes/origin/production",
+            ".git/logs/refs/remotes/origin/development",
+            ".git/logs/refs/stash",
+            ".git/packed-refs",
+            ".git/refs/heads/main",
+            ".git/refs/heads/master",
+            ".git/refs/heads/staging",
+            ".git/refs/heads/production",
+            ".git/refs/heads/development",
+            ".git/refs/remotes/origin/HEAD",
+            ".git/refs/remotes/origin/main",
+            ".git/refs/remotes/origin/master",
+            ".git/refs/remotes/origin/staging",
+            ".git/refs/remotes/origin/production",
+            ".git/refs/remotes/origin/development",
+            ".git/refs/stash",
+            ".git/refs/wip/wtree/refs/heads/main",
+            ".git/refs/wip/wtree/refs/heads/master",
+            ".git/refs/wip/wtree/refs/heads/staging",
+            ".git/refs/wip/wtree/refs/heads/production",
+            ".git/refs/wip/wtree/refs/heads/development",
+            ".git/refs/wip/index/refs/heads/main",
+            ".git/refs/wip/index/refs/heads/master",
+            ".git/refs/wip/index/refs/heads/staging",
+            ".git/refs/wip/index/refs/heads/production",
+            ".git/refs/wip/index/refs/heads/development",
+        ]
+        process_tasks(
+            tasks,
+            find_refs,
+            session,
+            url,
+            directory,
+            timeout,
+        )
 
-        printf("[-] Sanitizing .git/config\n")
+        # find packs
+        printf("[-] Finding packs\n")
+        tasks = []
+
+        # use .git/objects/info/packs to find packs
+        info_packs_path = os.path.join(directory, ".git", "objects", "info", "packs")
+        if os.path.exists(info_packs_path):
+            with open(info_packs_path, "r") as f:
+                info_packs = f.read()
+
+            for sha1 in re.findall(r"pack-([a-f0-9]{40})\.pack", info_packs):
+                tasks.append(f".git/objects/pack/pack-{sha1}.idx")
+                tasks.append(f".git/objects/pack/pack-{sha1}.pack")
+
+        process_tasks(
+            tasks,
+            download_file,
+            session,
+            url,
+            directory,
+            timeout,
+        )
+
+        # find objects
+        printf("[-] Finding objects\n")
+        objs = set()
+        packed_objs = set()
+
+        # .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
+        files = [
+            os.path.join(directory, ".git", "packed-refs"),
+            os.path.join(directory, ".git", "info", "refs"),
+            os.path.join(directory, ".git", "FETCH_HEAD"),
+            os.path.join(directory, ".git", "ORIG_HEAD"),
+        ]
+        for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "refs")):
+            for filename in filenames:
+                files.append(os.path.join(dirpath, filename))
+        for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "logs")):
+            for filename in filenames:
+                files.append(os.path.join(dirpath, filename))
+
+        for filepath in files:
+            if not os.path.exists(filepath):
+                continue
+
+            with open(filepath, "r") as f:
+                content = f.read()
+
+            for obj in re.findall(r"(^|\s)([a-f0-9]{40})($|\s)", content):
+                obj = obj[1]
+                objs.add(obj)
+
+        # use .git/index to find objects
+        index_path = os.path.join(directory, ".git", "index")
+        if os.path.exists(index_path):
+            index = dulwich.index.Index(index_path)
+
+            for entry in index.iterobjects():
+                objs.add(entry[1].decode())
+
+        # use packs to find more objects to fetch, and objects that are packed
+        pack_file_dir = os.path.join(directory, ".git", "objects", "pack")
+        if os.path.isdir(pack_file_dir):
+            for filename in os.listdir(pack_file_dir):
+                if filename.startswith("pack-") and filename.endswith(".pack"):
+                    pack_data_path = os.path.join(pack_file_dir, filename)
+                    pack_idx_path = os.path.join(pack_file_dir, filename[:-5] + ".idx")
+                    pack_data = dulwich.pack.PackData(pack_data_path)
+                    pack_idx = dulwich.pack.load_pack_index(pack_idx_path)
+                    pack = dulwich.pack.Pack.from_objects(pack_data, pack_idx)
+
+                    for obj_file in pack.iterobjects():
+                        packed_objs.add(obj_file.sha().hexdigest())
+                        objs |= set(get_referenced_sha1(obj_file))
+
+        # fetch all objects
+        printf("[-] Fetching objects\n")
+        process_tasks(
+            list(objs),
+            find_objects,
+            session,
+            url,
+            directory,
+            timeout,
+        )
+
+        # git checkout
+        printf("[-] Running git checkout .\n")
+        os.chdir(directory)
         sanitize_file(".git/config")
 
-        printf("[-] Running git checkout .\n")
-        subprocess.check_call(["git", "checkout", "."], env=environment)
+        # ignore errors
+        subprocess.call(["git", "checkout", "."], stderr=open(os.devnull, "wb"), env=environment)
+
         return {"status": "success", "path": directory, "url": str(url)}
-
-    # no directory listing
-    printf("[-] Fetching common files\n")
-    tasks = [
-        ".gitignore",
-        ".git/COMMIT_EDITMSG",
-        ".git/description",
-        ".git/hooks/applypatch-msg.sample",
-        ".git/hooks/commit-msg.sample",
-        ".git/hooks/post-commit.sample",
-        ".git/hooks/post-receive.sample",
-        ".git/hooks/post-update.sample",
-        ".git/hooks/pre-applypatch.sample",
-        ".git/hooks/pre-commit.sample",
-        ".git/hooks/pre-push.sample",
-        ".git/hooks/pre-rebase.sample",
-        ".git/hooks/pre-receive.sample",
-        ".git/hooks/prepare-commit-msg.sample",
-        ".git/hooks/update.sample",
-        ".git/index",
-        ".git/info/exclude",
-        ".git/objects/info/packs",
-    ]
-    process_tasks(
-        tasks,
-        download_file,
-        session,
-        url,
-        directory,
-        timeout,
-    )
-
-    # find refs
-    printf("[-] Finding refs/\n")
-    tasks = [
-        ".git/FETCH_HEAD",
-        ".git/HEAD",
-        ".git/ORIG_HEAD",
-        ".git/config",
-        ".git/info/refs",
-        ".git/logs/HEAD",
-        ".git/logs/refs/heads/main",
-        ".git/logs/refs/heads/master",
-        ".git/logs/refs/heads/staging",
-        ".git/logs/refs/heads/production",
-        ".git/logs/refs/heads/development",
-        ".git/logs/refs/remotes/origin/HEAD",
-        ".git/logs/refs/remotes/origin/main",
-        ".git/logs/refs/remotes/origin/master",
-        ".git/logs/refs/remotes/origin/staging",
-        ".git/logs/refs/remotes/origin/production",
-        ".git/logs/refs/remotes/origin/development",
-        ".git/logs/refs/stash",
-        ".git/packed-refs",
-        ".git/refs/heads/main",
-        ".git/refs/heads/master",
-        ".git/refs/heads/staging",
-        ".git/refs/heads/production",
-        ".git/refs/heads/development",
-        ".git/refs/remotes/origin/HEAD",
-        ".git/refs/remotes/origin/main",
-        ".git/refs/remotes/origin/master",
-        ".git/refs/remotes/origin/staging",
-        ".git/refs/remotes/origin/production",
-        ".git/refs/remotes/origin/development",
-        ".git/refs/stash",
-        ".git/refs/wip/wtree/refs/heads/main",
-        ".git/refs/wip/wtree/refs/heads/master",
-        ".git/refs/wip/wtree/refs/heads/staging",
-        ".git/refs/wip/wtree/refs/heads/production",
-        ".git/refs/wip/wtree/refs/heads/development",
-        ".git/refs/wip/index/refs/heads/main",
-        ".git/refs/wip/index/refs/heads/master",
-        ".git/refs/wip/index/refs/heads/staging",
-        ".git/refs/wip/index/refs/heads/production",
-        ".git/refs/wip/index/refs/heads/development",
-    ]
-    process_tasks(
-        tasks,
-        find_refs,
-        session,
-        url,
-        directory,
-        timeout,
-    )
-
-    # find packs
-    printf("[-] Finding packs\n")
-    tasks = []
-
-    # use .git/objects/info/packs to find packs
-    info_packs_path = os.path.join(directory, ".git", "objects", "info", "packs")
-    if os.path.exists(info_packs_path):
-        with open(info_packs_path, "r") as f:
-            info_packs = f.read()
-
-        for sha1 in re.findall(r"pack-([a-f0-9]{40})\.pack", info_packs):
-            tasks.append(f".git/objects/pack/pack-{sha1}.idx")
-            tasks.append(f".git/objects/pack/pack-{sha1}.pack")
-
-    process_tasks(
-        tasks,
-        download_file,
-        session,
-        url,
-        directory,
-        timeout,
-    )
-
-    # find objects
-    printf("[-] Finding objects\n")
-    objs = set()
-    packed_objs = set()
-
-    # .git/packed-refs, .git/info/refs, .git/refs/*, .git/logs/*
-    files = [
-        os.path.join(directory, ".git", "packed-refs"),
-        os.path.join(directory, ".git", "info", "refs"),
-        os.path.join(directory, ".git", "FETCH_HEAD"),
-        os.path.join(directory, ".git", "ORIG_HEAD"),
-    ]
-    for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "refs")):
-        for filename in filenames:
-            files.append(os.path.join(dirpath, filename))
-    for dirpath, _, filenames in os.walk(os.path.join(directory, ".git", "logs")):
-        for filename in filenames:
-            files.append(os.path.join(dirpath, filename))
-
-    for filepath in files:
-        if not os.path.exists(filepath):
-            continue
-
-        with open(filepath, "r") as f:
-            content = f.read()
-
-        for obj in re.findall(r"(^|\s)([a-f0-9]{40})($|\s)", content):
-            obj = obj[1]
-            objs.add(obj)
-
-    # use .git/index to find objects
-    index_path = os.path.join(directory, ".git", "index")
-    if os.path.exists(index_path):
-        index = dulwich.index.Index(index_path)
-
-        for entry in index.iterobjects():
-            objs.add(entry[1].decode())
-
-    # use packs to find more objects to fetch, and objects that are packed
-    pack_file_dir = os.path.join(directory, ".git", "objects", "pack")
-    if os.path.isdir(pack_file_dir):
-        for filename in os.listdir(pack_file_dir):
-            if filename.startswith("pack-") and filename.endswith(".pack"):
-                pack_data_path = os.path.join(pack_file_dir, filename)
-                pack_idx_path = os.path.join(pack_file_dir, filename[:-5] + ".idx")
-                pack_data = dulwich.pack.PackData(pack_data_path)
-                pack_idx = dulwich.pack.load_pack_index(pack_idx_path)
-                pack = dulwich.pack.Pack.from_objects(pack_data, pack_idx)
-
-                for obj_file in pack.iterobjects():
-                    packed_objs.add(obj_file.sha().hexdigest())
-                    objs |= set(get_referenced_sha1(obj_file))
-
-    # fetch all objects
-    printf("[-] Fetching objects\n")
-    process_tasks(
-        list(objs),
-        find_objects,
-        session,
-        url,
-        directory,
-        timeout,
-    )
-
-    # git checkout
-    printf("[-] Running git checkout .\n")
-    os.chdir(directory)
-    sanitize_file(".git/config")
-
-    # ignore errors
-    subprocess.call(["git", "checkout", "."], stderr=open(os.devnull, "wb"), env=environment)
-
-    return {"status": "success", "path": directory, "url": str(url)}
+    except Exception as e:
+        return {"status": "error", "path": str(e), "url": ""}
