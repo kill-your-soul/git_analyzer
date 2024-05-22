@@ -317,14 +317,14 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
         valid, error_message = verify_response(response)
         if not valid:
             printf(error_message, file=sys.stderr)
-            return 1
+            return {"status": "error", "path": error_message, "url": str(url)}
         elif not re.match(r"^(ref:.*|[0-9a-f]{40}$)", response.text.strip()):
             printf(
                 "error: %s/.git/HEAD is not a git HEAD file\n",
                 url,
                 file=sys.stderr,
             )
-            return {"status": "error", "path": "", "url": str(url)}
+            return {"status": "error", "path": f"error: {url}/.git/HEAD is not a git HEAD file", "url": str(url)}
 
         # set up environment to ensure proxy usage
         environment = os.environ.copy()
@@ -542,4 +542,5 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
 
         return {"status": "success", "path": directory, "url": str(url)}
     except Exception as e:
+        print(e)
         return {"status": "error", "path": str(e), "url": ""}

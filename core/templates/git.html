@@ -39,6 +39,12 @@
             });
 
             const data = await response.json();
+
+            if (response.status === 403 && data.detail === "Access Denied") {
+                document.getElementById('status').innerHTML = 'Access Denied. Please check your token.';
+                return;
+            }
+
             const taskId = data.task_id;
 
             const statusDiv = document.getElementById('status');
@@ -53,13 +59,14 @@
                     setTimeout(checkStatus, 500); // Проверка каждые полсекунды
                 } else if (statusData.status === 'SUCCESS') {
                     statusDiv.innerHTML = `Task completed successfully. Saved to: ${statusData.path}`;
-                } else if (statusData.status === 'FAILURE') {
+                } else if (statusData.status === 'ERROR') {
                     statusDiv.innerHTML = `Task failed: ${statusData.result}`;
                 }
             };
 
             setTimeout(checkStatus, 500); // Запуск первой проверки через полсекунды
         });
+
     </script>
 </body>
 
