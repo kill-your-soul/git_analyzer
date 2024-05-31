@@ -19,6 +19,7 @@
                     <th>URL</th>
                     <th>Path</th>
                     <th>Created At</th>
+                    <th>Leaks</th>
                 </tr>
             </thead>
             <tbody>
@@ -31,6 +32,7 @@
                     <td>{{ task.url }}</td>
                     <td> {{ task.path }} </td>
                     <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ task.leaks }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

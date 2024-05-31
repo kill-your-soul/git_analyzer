@@ -25,6 +25,7 @@ templates = Jinja2Templates(directory="templates")
 @router.post("/")
 @token_required
 async def get_dot_git(session: SessionDep, git_in: GitIn, request: Request) -> None:
+    # TODO: add check url
     path_to_save = Path(__file__).parent.parent.parent / "gits" / git_in.url.split("://")[1]
     # task = download_content.apply_async(args=[git_in.url, str(path_to_save)])
     task = fetch_git.apply_async(
@@ -46,6 +47,7 @@ async def get_dot_git(session: SessionDep, git_in: GitIn, request: Request) -> N
         user=request.headers.get("Authorization"),
         url=git_in.url,
         path="",
+        leaks=[],
     )
     session.add(new_task)
     await session.commit()
@@ -87,3 +89,9 @@ async def tasks(session: SessionDep, request: Request):
     await update_all_tasks_status(session, tasks)
 
     return templates.TemplateResponse("tasks.html", {"request": request, "tasks": tasks})
+
+
+@router.get("/task/{task_id}")
+async def task_table(session: SessionDep, request: Request, task_id: str):
+    task_in_db: Task | None = await update_task_status(session, task_id)
+    return templates.TemplateResponse("leak.html", {"request": request, "leaks": task_in_db.leaks})

@@ -18,8 +18,10 @@ async def update_task_status(session: SessionDep, task_id: str):
     task_in_db.status = task_result.state
     print(task_result.traceback)
     print(task_result.info)
+    
     if task_result.info and task_result.info["status"] == "success":
         task_in_db.path = task_result.info["path"]
+        task_in_db.leaks = task_result.info["leaks"]
     if task_result.info and task_result.info["status"].lower() == "error":
         task_in_db.status = "ERROR"
         task_in_db.result = task_result.info["path"]

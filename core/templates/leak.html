@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaks</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+
+<body>
+    <div>
+        <h1>Leaks</h1>
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>StartLine</th>
+                    <th>EndLine</th>
+                    <th>StartColumn</th>
+                    <th>EndColumn</th>
+                    <th>Match</th>
+                    <th>Secret</th>
+                    <th>File</th>
+                    <th>SymlinkFile</th>
+                    <th>Commit</th>
+                    <th>Entropy</th>
+                    <th>Author</th>
+                    <th>Email</th>
+                    <th>Date</th>
+                    <th>Message</th>
+                    <th>RuleID</th>
+                    <th>Fingerprint</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for leak in leaks %}
+                <tr>
+                    <td>{{ leak.Description }}</td>
+                    <td>{{ leak.StartLine }}</td>
+                    <td>{{ leak.EndLine }}</td>
+                    <td>{{ leak.StartColumn }}</td>
+                    <td>{{ leak.EndColumn }}</td>
+                    <td>{{ leak.Match }}</td>
+                    <td>{{ leak.Secret }}</td>
+                    <td>{{ leak.File }}</td>
+                    <td>{{ leak.SymlinkFile or "N/A" }}</td>
+                    <td>{{ leak.Commit or "N/A" }}</td>
+                    <td>{{ leak.Entropy }}</td>
+                    <td>{{ leak.Author or "N/A" }}</td>
+                    <td>{{ leak.Email or "N/A" }}</td>
+                    <td>{{ leak.Date or "N/A" }}</td>
+                    <td>{{ leak.Message or "N/A" }}</td>
+                    <!-- <td>{{ leak.Tags | join(', ') }}</td> -->
+                    <td>{{ leak.RuleID }}</td>
+                    <td>{{ leak.Fingerprint }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+
+</html>

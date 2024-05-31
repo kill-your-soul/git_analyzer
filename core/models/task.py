@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlmodel import Field, MetaData
+from sqlmodel import JSON, Column, Field, MetaData
 
 from models.base import BaseModel
 
@@ -16,3 +16,5 @@ class Task(BaseModel, table=True):
     user: str = Field(index=True)
     url: str = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False, index=True)
+
+    leaks: list[dict] = Field(sa_column=Column(JSON), default=[])

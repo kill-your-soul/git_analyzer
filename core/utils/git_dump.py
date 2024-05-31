@@ -18,6 +18,8 @@ import requests.adapters
 import socks
 from requests_pkcs12 import Pkcs12Adapter
 
+from utils.leaks import run_gitleaks
+
 from .celery_worker import celery_app
 
 
@@ -539,8 +541,9 @@ def fetch_git(self, url: str, directory, jobs, retry, timeout, http_headers, cli
 
         # ignore errors
         subprocess.call(["git", "checkout", "."], stderr=open(os.devnull, "wb"), env=environment)
-
-        return {"status": "success", "path": directory, "url": str(url)}
+        leaks = run_gitleaks(directory)
+        print(leaks)
+        return {"status": "success", "path": directory, "url": str(url), "leaks": leaks}
     except Exception as e:
         print(e)
         return {"status": "error", "path": str(e), "url": ""}
