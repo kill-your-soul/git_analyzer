@@ -32,7 +32,7 @@
                     <td>{{ task.url }}</td>
                     <td> {{ task.path }} </td>
                     <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                    <td>{{ task.leaks }}</td>
+                    <td><a href="{{ url_for('task_table', task_id=task.task_id) }}">Leaks</a></td>
                 </tr>
                 {% endfor %}
             </tbody>
